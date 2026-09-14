@@ -1,76 +1,190 @@
-import joblib
 from pathlib import Path
 
+import pandas as pd
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
 
 from src.data.preprocessing import clean_text
 
 
-# --------------------------------------------------
-# Load trained model artifacts
-# --------------------------------------------------
+# ============================================================
+# PATHS
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-MODELS_DIR = BASE_DIR / "models"
 
-vectorizer = joblib.load(
-    MODELS_DIR / "tfidf_vectorizer.joblib"
-)
-
-model = joblib.load(
-    MODELS_DIR / "logistic_regression.joblib"
-)
+DATA_PATH = BASE_DIR / "data" / "raw" / "SMSSpamCollection"
 
 
-# --------------------------------------------------
-# FastAPI application
-# --------------------------------------------------
+# ============================================================
+# APP
+# ============================================================
 
 app = FastAPI(
-    title="SIFT",
+    title="SIFT API",
     description="Statistical Intelligence for Text Filtering",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 
-# --------------------------------------------------
-# Request schema
-# --------------------------------------------------
+# ============================================================
+# CORS
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ============================================================
+# LOAD DATASET
+# ============================================================
+
+df = pd.read_csv(
+    DATA_PATH,
+    sep="\t",
+    header=None,
+    names=["label", "message"],
+)
+
+
+# ============================================================
+# CLEAN TEXT
+# ============================================================
+
+df["clean_message"] = df["message"].apply(clean_text)
+
+
+# ============================================================
+# PREPARE FEATURES AND LABELS
+# ============================================================
+
+X_text = df["clean_message"]
+
+y = df["label"].map({
+    "ham": 0,
+    "spam": 1,
+})
+
+
+# ============================================================
+# TF-IDF
+# ============================================================
+
+vectorizer = TfidfVectorizer(
+    lowercase=False,
+    token_pattern=r"(?u)\b\w+\b|[^\w\s]",
+)
+
+
+X = vectorizer.fit_transform(X_text)
+
+
+# ============================================================
+# LOGISTIC REGRESSION
+# ============================================================
+
+model = LogisticRegression(
+    max_iter=1000,
+    random_state=42,
+)
+
+model.fit(X, y)
+
+
+# ============================================================
+# REQUEST SCHEMA
+# ============================================================
 
 class MessageRequest(BaseModel):
     message: str
 
 
-# --------------------------------------------------
-# Health check
-# --------------------------------------------------
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 
 @app.get("/")
 def root():
     return {
-        "project": "SIFT",
-        "status": "running"
+        "status": "online",
+        "service": "SIFT API",
+        "version": "1.0.0",
     }
 
 
-# --------------------------------------------------
-# Prediction endpoint
-# --------------------------------------------------
+# ============================================================
+# PREDICTION
+# ============================================================
 
 @app.post("/predict")
 def predict(request: MessageRequest):
 
-    cleaned_message = clean_text(request.message)
+    # --------------------------------------------------------
+    # 1. Validate input
+    # --------------------------------------------------------
 
-    features = vectorizer.transform([cleaned_message])
+    message = request.message.strip()
 
-    probability = model.predict_proba(features)[0][1]
+    if not message:
+        return {
+            "prediction": "unknown",
+            "spam_probability": 0.0,
+            "message": "Please provide a message.",
+        }
 
-    prediction = "spam" if probability >= 0.5 else "ham"
+
+    # --------------------------------------------------------
+    # 2. Clean message
+    # --------------------------------------------------------
+
+    cleaned_message = clean_text(message)
+
+
+    # --------------------------------------------------------
+    # 3. Convert message to TF-IDF
+    # --------------------------------------------------------
+
+    features = vectorizer.transform(
+        [cleaned_message]
+    )
+
+
+    # --------------------------------------------------------
+    # 4. Predict probability
+    # --------------------------------------------------------
+
+    spam_probability = float(
+        model.predict_proba(features)[0][1]
+    )
+
+
+    # --------------------------------------------------------
+    # 5. Classify
+    # --------------------------------------------------------
+
+    prediction = (
+        "spam"
+        if spam_probability >= 0.5
+        else "ham"
+    )
+
+
+    # --------------------------------------------------------
+    # 6. Return result
+    # --------------------------------------------------------
 
     return {
-        "message": request.message,
         "prediction": prediction,
-        "spam_probability": round(float(probability), 4)
+        "spam_probability": spam_probability,
     }

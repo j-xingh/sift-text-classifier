@@ -13,8 +13,9 @@ def test_root_endpoint():
 
     data = response.json()
 
-    assert data["project"] == "SIFT"
-    assert data["status"] == "running"
+    assert data["status"] == "online"
+    assert data["service"] == "SIFT API"
+    assert data["version"] == "1.0.0"
 
 
 def test_predict_endpoint():
